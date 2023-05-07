@@ -1,0 +1,158 @@
+// -------
+
+// Spreadheet link with product IDs
+
+var SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1_9lK8QJ1oVBDwH8n7O8WSVsO5Ut1be765QvWXKdVbkA/edit#gid=0";
+
+// All settings
+
+// --- bucket on ROAS or CPA
+
+var bucketRoas = true; // bucket based on tROAS
+var bucketCpa = false; // bucket based on tCPA
+
+// --- threshold settings
+
+var targetRoas = 20; // your ROAS target, will be ignored if bucketRoas = false
+var targetCpa = 3; // your CPA target, will be ignored if bucketCpa = false
+var averageCvr = 5; // your average conversion rate to calculate the click threshold
+var impressionThreshold = 50; // between 1 - 50 means a 'no-indexed' product, all products without a label have 0 impressions
+var daysAgo = 45; // the date range you want to look at
+
+// Advanced settings
+
+// --- tROAS difference setting
+var percentageDifferenceTarget = 20; // difference in % of your target it partly defines if a product is over-index or near-index 
+
+// --- over-index setting
+var addToOverIndex = true; // add or do not add products to the over-index label, if not those will be added to your index bucket (set to true or false)
+var clickMultiplier = 3; // your click multiplier to become an over-index product 
+
+// Start script, don't add anything below this line
+
+function main() {
+  if (bucketRoas === bucketCpa) {
+    Logger.log("Error: Both bucketRoas and bucketCpa cannot be set to the same value. Please set one to true and the other to false.");
+    return;
+  }
+
+  var products = getFilteredShoppingProducts(daysAgo);
+  products.sort(function (a, b) {
+    return a[0] > b[0];
+  });
+  products = products.slice(0, 999999);
+  pushToSpreadsheet(products);
+}
+
+
+function getFilteredShoppingProducts(daysAgo) {
+var today = new Date();
+var daysAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - daysAgo);
+var dateFrom = Utilities.formatDate(daysAgo, AdWordsApp.currentAccount().getTimeZone(), 'yyyyMMdd');
+var dateTo = Utilities.formatDate(today, AdWordsApp.currentAccount().getTimeZone(), 'yyyyMMdd');
+  
+var query = 
+  
+    "SELECT OfferId, Impressions, Clicks, Ctr, Cost, Conversions, ConversionValue " +
+    "FROM SHOPPING_PERFORMANCE_REPORT " +
+    "DURING "+ dateFrom +","+ dateTo;
+  
+  var products = [];
+  var count = 0;
+  var productTypeCounts = {
+    'over-index': 0,
+    'index': 0,
+    'near-index': 0,
+    'no-index': 0,
+    'under-index': 0
+  };
+
+  var report = AdWordsApp.report(query);
+  var rows = report.rows();
+  while (rows.hasNext()) {
+    var row = rows.next();
+  
+var offer_id = row['OfferId'];
+var impressions = row['Impressions'].toString();
+var clicks = row['Clicks'].toString();
+var cost = row['Cost'].toString();
+var conversions = row['Conversions'].toString();
+var conversionValue = row['ConversionValue'].toString();
+var convPerCost = (cost.replace(",", "") / conversions.replace(",", "")).toString();
+  if (isNaN(convPerCost) || !isFinite(convPerCost)){
+  convPerCost = 0;
+}
+var convValuePerCost = (conversionValue.replace(",", "") / cost.replace(",", "")).toString();
+if (isNaN(convValuePerCost)){
+  convValuePerCost = 0;
+}
+    
+var isProductType = '';
+if (bucketRoas) {
+  if (addToOverIndex && clicks > ((100 * clickMultiplier) / averageCvr) 
+      && convValuePerCost >= targetRoas + (percentageDifferenceTarget / 100 * targetRoas)) {
+    isProductType = 'over-index';
+  } else if (clicks >= (100 / averageCvr) 
+      && convValuePerCost >= targetRoas) {
+    isProductType = 'index';
+  } else if (convValuePerCost >= (targetRoas - (percentageDifferenceTarget / 100 * targetRoas))) {
+    isProductType = 'near-index';
+  } else if (impressions < impressionThreshold) {
+    isProductType = 'no-index';
+  } else {
+    isProductType = 'under-index';
+  }
+} else if (bucketCpa) {
+  if (addToOverIndex && clicks > ((100 * clickMultiplier) / averageCvr) 
+      && convPerCost <= targetCpa - (percentageDifferenceTarget / 100 * targetCpa)
+      && conversions >= 1) {
+    isProductType = 'over-index';
+  } else if (clicks >= (100 / averageCvr) 
+      && convPerCost <= targetCpa  
+      && conversions >= 1) {
+    isProductType = 'index';
+  } else if (convPerCost <= (targetCpa + (percentageDifferenceTarget / 100 * targetCpa))
+      && conversions >= 1) {
+    isProductType = 'near-index';
+  } else if (impressions < impressionThreshold) {
+    isProductType = 'no-index';
+  } else {
+    isProductType ='under-index';
+}
+}
+
+productTypeCounts[isProductType]++;
+
+products.push([
+offer_id,
+impressions,
+clicks,
+cost,
+conversions,
+conversionValue,
+convValuePerCost,
+convPerCost,
+isProductType,
+]);
+count += 1;
+  }
+  Logger.log('Total products: ' + count);
+  
+  for (var productType in productTypeCounts) {
+    Logger.log(productType + ': ' + productTypeCounts[productType]);
+  }
+  
+  return products;
+}
+
+function pushToSpreadsheet(data){
+var spreadsheet = SpreadsheetApp.openByUrl(SPREADSHEET_URL);
+var sheet = spreadsheet.getSheetByName('labels');
+var lastRow = sheet.getMaxRows();
+sheet.getRange('A2:I'+lastRow).clearContent();
+var start_row=2;
+var endRow=start_row+data.length-1;
+var range = sheet.getRange('A'+start_row+':'+'I'+endRow);
+if (data.length>0){range.setValues(data);}
+return;
+}
